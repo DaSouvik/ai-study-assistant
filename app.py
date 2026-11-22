@@ -1,8 +1,12 @@
+from collections.abc import Mapping
 import hashlib
 
 import streamlit as st
+from sqlalchemy.exc import ArgumentError, SQLAlchemyError
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from database.db import (
+    configure_database,
     delete_document,
     find_library_matches,
     get_document,
@@ -18,6 +22,7 @@ from study_tools import (
     generate_quiz,
     summarize_text,
 )
+from identity import google_owner_id
 
 
 def _navigate_to(page_name: str) -> None:
@@ -27,6 +32,44 @@ def _navigate_to(page_name: str) -> None:
 def _open_study_document(document_id: int) -> None:
     st.session_state["study-document-select"] = document_id
     _navigate_to("Study tools")
+
+
+def _configured_database_url() -> str | None:
+    try:
+        auth_settings = st.secrets["auth"]
+        database_settings = st.secrets["database"]
+    except (KeyError, StreamlitSecretNotFoundError):
+        return None
+
+    if not isinstance(auth_settings, Mapping) or not isinstance(
+        database_settings,
+        Mapping,
+    ):
+        return None
+    google_settings = auth_settings.get("google")
+    if not isinstance(google_settings, Mapping):
+        return None
+
+    required_values = (
+        auth_settings.get("redirect_uri"),
+        auth_settings.get("cookie_secret"),
+        google_settings.get("client_id"),
+        google_settings.get("client_secret"),
+        google_settings.get("server_metadata_url"),
+        database_settings.get("url"),
+    )
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in required_values
+    ):
+        return None
+
+    database_url = required_values[-1]
+    if not isinstance(database_url, str) or not database_url.startswith(
+        ("postgres://", "postgresql://", "postgresql+psycopg://")
+    ):
+        return None
+    return database_url
 
 
 st.set_page_config(
@@ -138,12 +181,54 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-initialize_database()
-documents = get_documents()
+database_url = _configured_database_url()
+if database_url is None:
+    st.title("📚 Study Desk")
+    st.error("Private sign-in and storage are not configured.")
+    st.write(
+        "The app is locked until Google sign-in and Supabase PostgreSQL "
+        "credentials are set up. Follow the private deployment steps in "
+        "the README."
+    )
+    st.stop()
+
+if not st.user.is_logged_in:
+    st.title("📚 Study Desk")
+    st.write("Sign in with Google to open your private study library.")
+    if st.button("Continue with Google", type="primary"):
+        st.login("google")
+    st.stop()
+
+try:
+    owner_id = google_owner_id(st.user.to_dict())
+except ValueError:
+    st.error("Your Google sign-in did not provide a valid account identifier.")
+    st.stop()
+
+if st.session_state.get("_library_owner_id") != owner_id:
+    st.session_state.clear()
+    st.session_state["_library_owner_id"] = owner_id
+
+try:
+    configure_database(database_url)
+    initialize_database()
+except (ArgumentError, SQLAlchemyError, ValueError) as exc:
+    st.error(
+        "Private storage is unavailable. Verify the Supabase session-pooler "
+        f"connection settings. Error type: {type(exc).__name__}."
+    )
+    st.stop()
+
+documents = get_documents(owner_id=owner_id)
 
 with st.sidebar:
     st.title("📚 Study Desk")
     st.caption("A quiet place to turn notes into practice.")
+    signed_in_email = st.user.get("email")
+    if isinstance(signed_in_email, str) and signed_in_email:
+        st.caption(f"Signed in as {signed_in_email}")
+    if st.button("Sign out", width="stretch"):
+        st.logout()
     page = st.radio(
         "Workspace",
         ["Overview", "Upload notes", "My library", "Study tools"],
@@ -153,9 +238,9 @@ with st.sidebar:
     st.divider()
     st.metric("Saved documents", len(documents))
     st.caption(
-        "No accounts are configured. On a shared deployment, everyone can "
-        "access the same library. Don't upload private documents. Hosted "
-        "SQLite data can reset during redeploys."
+        "Your library is private to your Google account. Documents are stored "
+        "in the configured Supabase database. Sharing a document library with "
+        "another account is not enabled."
     )
 
 st.title("📚 Study Desk")
@@ -251,8 +336,7 @@ if page == "Overview":
             """
         )
         st.warning(
-            "No sign-in or per-user access is configured. Anyone who can open "
-            "a shared deployment can browse its library."
+            "Sign in with your Google account to access your private library."
         )
 
 elif page == "Upload notes":
@@ -326,6 +410,7 @@ elif page == "Upload notes":
                     filename=draft["filename"],
                     content=draft["text"],
                     summary=summary,
+                    owner_id=owner_id,
                 )
             except Exception as exc:
                 st.error(f"Could not save the document: {exc}")
@@ -344,7 +429,10 @@ elif page == "My library":
             placeholder="Type a word or phrase",
         )
         if query.strip():
-            matches = find_library_matches(query.strip())
+            matches = find_library_matches(
+                query.strip(),
+                owner_id=owner_id,
+            )
             st.markdown(f"**{len(matches)} matching document(s)**")
             for match in matches:
                 snippets = find_matches(match["content"], query.strip(), limit=3)
@@ -365,7 +453,10 @@ elif page == "My library":
             options=list(labels),
             format_func=labels.get,
         )
-        selected_document = get_document(selected_id)
+        selected_document = get_document(
+            selected_id,
+            owner_id=owner_id,
+        )
         if selected_document:
             st.markdown(f"### {selected_document['filename']}")
             st.caption(f"Added {selected_document['created_at']}")
@@ -396,7 +487,7 @@ elif page == "My library":
                 key=f"delete-document-{selected_id}",
             ):
                 try:
-                    delete_document(selected_id)
+                    delete_document(selected_id, owner_id=owner_id)
                 except Exception as exc:
                     st.error(f"Could not delete the document: {exc}")
                 else:
@@ -417,7 +508,10 @@ elif page == "Study tools":
             format_func=labels.get,
             key="study-document-select",
         )
-        selected_document = get_document(selected_id)
+        selected_document = get_document(
+            selected_id,
+            owner_id=owner_id,
+        )
 
         if selected_document:
             summary_tab, quiz_tab, cards_tab = st.tabs(
