@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#1c3150">
+    <meta name="description" content="Study with your notes using summaries, quizzes, flashcards, and a shared PDF library.">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Study Desk">
+    <title>Study Desk</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icons/icon-192.png" sizes="192x192">
+    <link rel="apple-touch-icon" href="/icons/icon-192.png">
+    <style>
+      :root {
+        color-scheme: light;
+        background: #f4f1e9;
+        font-family: "Segoe UI", Arial, sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        background: #f4f1e9;
+      }
+
+      main {
+        width: 100%;
+        height: 100vh;
+        height: 100dvh;
+      }
+
+      iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+
+      #offline {
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        gap: 0.6rem;
+        padding: 2rem;
+        color: #1d2b40;
+        text-align: center;
+      }
+
+      #offline[hidden], iframe[hidden] { display: none; }
+
+      #offline h1 {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+      }
+
+      #offline p {
+        max-width: 32rem;
+        line-height: 1.5;
+      }
+
+      #offline button {
+        min-height: 44px;
+        padding: 0.65rem 1rem;
+        border: 0;
+        border-radius: 8px;
+        background: #1c3150;
+        color: white;
+        font: inherit;
+        font-weight: 600;
+      }
+
+    </style>
+  </head>
+  <body>
+    <main>
+      <iframe
+        id="study-app"
+        title="Study Desk"
+        src="https://dasouvik-ai-study-assistant-app-ho0the.streamlit.app/?embed=true"
+        allow="clipboard-read; clipboard-write"
+      ></iframe>
+      <section id="offline" role="status" hidden>
+        <h1>You’re offline</h1>
+        <p>Study Desk needs an internet connection to open your notes and study tools.</p>
+        <button type="button" onclick="window.location.reload()">Try again</button>
+      </section>
+    </main>
+    <script>
+      const appFrame = document.getElementById("study-app");
+      const offlineMessage = document.getElementById("offline");
+
+      function updateConnectionState() {
+        appFrame.hidden = !navigator.onLine;
+        offlineMessage.hidden = navigator.onLine;
+      }
+
+      window.addEventListener("online", updateConnectionState);
+      window.addEventListener("offline", updateConnectionState);
+      updateConnectionState();
+
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js").catch((error) => {
+          console.error("Could not register the Study Desk service worker.", error);
+        });
+      }
+    </script>
+  </body>
+</html>
