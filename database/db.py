@@ -1,6 +1,5 @@
 from functools import lru_cache
 from pathlib import Path
-import socket
 
 from sqlalchemy import (
     Column,
@@ -66,52 +65,54 @@ def configure_database(database_url: str | None) -> None:
     _configured_database_url = url
 
 
-def diagnose_database_network() -> dict[str, bool]:
-    url = _configured_database_url
-    if url is None or not url.drivername.startswith("postgresql"):
-        return {}
-    if url.host is None:
-        return {}
+def database_error_hint(error: BaseException) -> str:
+    original = getattr(error, "orig", None)
+    message = str(original if isinstance(original, BaseException) else error)
+    message = message.casefold()
 
-    try:
-        addresses = socket.getaddrinfo(
-            url.host,
-            url.port or 5432,
-            type=socket.SOCK_STREAM,
-        )
-    except socket.gaierror:
-        return {
-            "dns_resolved": False,
-            "ipv4_dns": False,
-            "ipv4_tcp": False,
-            "ipv6_dns": False,
-            "ipv6_tcp": False,
-        }
-
-    result = {"dns_resolved": True}
-    for family, name in (
-        (socket.AF_INET, "ipv4"),
-        (socket.AF_INET6, "ipv6"),
+    if "password authentication failed" in message or (
+        "authentication failed" in message
     ):
-        family_addresses = [
-            address for address in addresses if address[0] == family
-        ]
-        result[f"{name}_dns"] = bool(family_addresses)
-        result[f"{name}_tcp"] = False
-        for address in family_addresses[:2]:
-            try:
-                with socket.socket(
-                    address[0],
-                    address[1],
-                    address[2],
-                ) as connection:
-                    connection.settimeout(2)
-                    connection.connect(address[4])
-                result[f"{name}_tcp"] = True
-                break
-            except OSError:
-                continue
-    return result
+        return (
+            "Supabase rejected database authentication. Verify the current "
+            "database username and password in Streamlit Secrets."
+        )
+    if "could not translate host name" in message or (
+        "name or service not known" in message
+    ):
+        return (
+            "The database hostname could not be resolved. Verify the pooler "
+            "hostname in Streamlit Secrets."
+        )
+    if "connection timed out" in message or "timeout expired" in message:
+        return (
+            "The database connection timed out. Verify the pooler endpoint "
+            "and its availability."
+        )
+    if "connection refused" in message:
+        return (
+            "The database host refused the connection. Verify the pooler "
+            "hostname and port."
+        )
+    if "network is unreachable" in message or "no route to host" in message:
+        return (
+            "The app server has no network route to the database. Verify "
+            "the connection method and IP-family compatibility."
+        )
+    if "too many clients" in message or "connection slots" in message:
+        return (
+            "Supabase could not accept another database connection. Check "
+            "pooler capacity and open connections."
+        )
+    if "ssl" in message or "tls" in message or "certificate" in message:
+        return (
+            "TLS negotiation with the database failed. Verify that SSL is "
+            "enabled for the connection."
+        )
+    return (
+        "The database connection failed during setup. Check the Supabase "
+        "pooler settings; raw error details are hidden."
+    )
 
 
 @lru_cache(maxsize=8)
