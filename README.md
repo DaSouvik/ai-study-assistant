@@ -2,7 +2,7 @@
 
 A Streamlit web app for uploading PDF study notes and generating summaries,
 quizzes, flashcards, and searchable library entries locally.
-An optional Claude Sonnet 5.5 chat assistant can answer study questions.
+An optional local Gemma study assistant can answer questions using Ollama.
 
 ## Run locally
 
@@ -17,22 +17,24 @@ OCR for scanned PDFs requires Tesseract. On Streamlit Community Cloud, the
 `packages.txt` file installs Tesseract during deployment. Locally on Windows,
 install Tesseract and ensure `tesseract.exe` is available on `PATH`.
 
-## Configure the Claude assistant
+## Run the local AI assistant
 
-Create an Anthropic API key in the
-[Claude Console](https://platform.claude.com/settings/keys). For local
-development, add it to `.streamlit/secrets.toml`; for Streamlit Community
-Cloud, add the same TOML under the app's **Settings → Secrets**:
+Install [Ollama for Windows](https://ollama.com/download/windows), then open
+Ollama and download the lightweight model from PowerShell:
 
-```toml
-[anthropic]
-api_key = "YOUR_ANTHROPIC_API_KEY"
+```powershell
+ollama pull gemma3:1b
 ```
 
-Never commit `secrets.toml` or share the API key. The deployed app has no
-sign-in, so anyone can use a configured key and generate charges for its owner.
-Chat messages are sent to Anthropic. The selected document's text is sent only
-when the user explicitly opts to include it.
+Run the app locally with the commands above. The assistant uses Ollama on the
+same computer, so it needs no API key and has no provider usage charges. Model
+responses may be slower on computers without a compatible GPU. Questions and
+optionally selected notes are sent to your local Ollama process, not to an
+external AI API.
+
+The public Streamlit Community Cloud deployment cannot access Ollama on your
+computer, so its assistant cannot answer. Run the app locally to chat with the
+model.
 
 ## Deploy to Streamlit Community Cloud
 

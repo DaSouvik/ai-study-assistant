@@ -1,14 +1,15 @@
 import hashlib
-from collections.abc import Mapping
 
-import anthropic
 import streamlit as st
-from streamlit.errors import StreamlitSecretNotFoundError
 
-from claude_assistant import (
+from local_assistant import (
     MAX_CONTEXT_CHARS,
     MAX_QUESTION_CHARS,
-    stream_claude_response,
+    MODEL_ID,
+    LocalModelError,
+    LocalModelNotFoundError,
+    LocalModelUnavailableError,
+    stream_local_response,
 )
 from database.db import (
     delete_document,
@@ -35,20 +36,6 @@ def _navigate_to(page_name: str) -> None:
 def _open_study_document(document_id: int) -> None:
     st.session_state["study-document-select"] = document_id
     _navigate_to("Study tools")
-
-
-def _configured_anthropic_api_key() -> str | None:
-    try:
-        settings = st.secrets["anthropic"]
-    except (KeyError, StreamlitSecretNotFoundError):
-        return None
-
-    if not isinstance(settings, Mapping):
-        return None
-    api_key = settings.get("api_key")
-    if not isinstance(api_key, str) or not api_key.strip():
-        return None
-    return api_key.strip()
 
 
 st.set_page_config(
@@ -188,8 +175,8 @@ with st.sidebar:
 
 st.title("📚 Study Desk")
 st.caption(
-    "Search, review, and practise from your own PDFs. Local study tools work "
-    "without an AI API key; Claude chat is available in AI assistant."
+    "Search, review, and practise from your own PDFs. Local tools need no AI "
+    "API key; Ollama chat works only when this app runs beside Ollama."
 )
 
 if page == "Overview":
@@ -266,7 +253,7 @@ if page == "Overview":
                 - Searchable notes library
                 - Quick summaries and quizzes
                 - Interactive flashcard practice
-                - Optional Claude study chat
+                - Optional local-only Ollama chat
                 """
             )
 
@@ -276,7 +263,7 @@ if page == "Overview":
             Summaries and practice questions are generated from your document
             text using local rules; they are not AI-generated. Flashcards show
             terms from your notes and reveal their source context, rather than
-            generating definitions. Use AI assistant to ask Claude questions.
+            generating definitions. Use AI assistant for local Ollama chat.
             """
         )
         st.warning(
@@ -604,123 +591,110 @@ elif page == "Study tools":
                                     st.rerun()
 
 elif page == "AI assistant":
-    st.subheader("Claude study assistant")
+    st.subheader("Local AI study assistant")
     st.write(
-        "Ask questions, request explanations, or make a study plan with "
-        "Claude Sonnet 5.5."
+        f"Ask questions, request explanations, or make a study plan with {MODEL_ID}."
+    )
+    st.info(
+        "Ollama runs the model on the same computer as this app. There is no "
+        "API key or provider usage bill."
     )
     st.warning(
-        "This app is public and has no sign-in. Anyone can use a configured "
-        "Anthropic API key, and usage is billed to its owner. Your chat "
-        "messages are sent to Anthropic. Study notes are sent only when you "
-        "explicitly include them below."
+        "This only works when Streamlit and Ollama run on the same computer. "
+        "The public Streamlit Cloud app cannot access Ollama on your PC."
     )
+    st.markdown("[Install Ollama for Windows](https://ollama.com/download/windows)")
+    st.code("ollama pull gemma3:1b", language="powershell")
 
-    api_key = _configured_anthropic_api_key()
-    if api_key is None:
-        st.info("Claude isn't configured yet. Add your API key to Streamlit Secrets:")
-        st.code(
-            '[anthropic]\napi_key = "YOUR_ANTHROPIC_API_KEY"',
-            language="toml",
+    document_labels = {
+        int(document["id"]): str(document["filename"])
+        for document in documents
+    }
+    selected_document_id = st.selectbox(
+        "Study notes (optional)",
+        options=[None, *document_labels],
+        format_func=lambda document_id: (
+            "No document"
+            if document_id is None
+            else document_labels[document_id]
+        ),
+        key="local-model-context-document",
+    )
+    selected_document = (
+        get_document(selected_document_id)
+        if selected_document_id is not None
+        else None
+    )
+    include_notes = st.checkbox(
+        "Include this document's text in local model requests",
+        disabled=selected_document is None,
+        key=f"local-model-include-notes-{selected_document_id}",
+    )
+    study_notes = None
+    if include_notes and selected_document is not None:
+        study_notes = str(selected_document["content"])
+        st.caption(
+            "The first "
+            f"{MAX_CONTEXT_CHARS:,} characters will be sent to Ollama on "
+            "this computer with each question."
         )
-    else:
-        document_labels = {
-            int(document["id"]): str(document["filename"])
-            for document in documents
-        }
-        selected_document_id = st.selectbox(
-            "Study notes (optional)",
-            options=[None, *document_labels],
-            format_func=lambda document_id: (
-                "No document"
-                if document_id is None
-                else document_labels[document_id]
-            ),
-            key="claude-context-document",
-        )
-        selected_document = (
-            get_document(selected_document_id)
-            if selected_document_id is not None
-            else None
-        )
-        include_notes = st.checkbox(
-            "Include this document's text in Claude requests",
-            disabled=selected_document is None,
-            key=f"claude-include-notes-{selected_document_id}",
-        )
-        study_notes = None
-        if include_notes and selected_document is not None:
-            study_notes = str(selected_document["content"])
-            st.caption(
-                "The first "
-                f"{MAX_CONTEXT_CHARS:,} characters will be sent to Anthropic "
-                "with each question."
+
+    chat_scope = (
+        f"document-{selected_document_id}"
+        if study_notes is not None
+        else "general"
+    )
+    history_key = f"local-model-messages-{chat_scope}"
+    if history_key not in st.session_state:
+        st.session_state[history_key] = []
+    messages = st.session_state[history_key]
+
+    for message in messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input(
+        "Ask the local study assistant",
+        key=f"local-model-input-{chat_scope}",
+    )
+    if prompt:
+        question = prompt.strip()
+        if not question:
+            st.warning("Enter a question before sending.")
+        elif len(question) > MAX_QUESTION_CHARS:
+            st.error(
+                f"Keep questions under {MAX_QUESTION_CHARS:,} characters."
             )
-
-        chat_scope = (
-            f"document-{selected_document_id}"
-            if study_notes is not None
-            else "general"
-        )
-        history_key = f"claude-messages-{chat_scope}"
-        if history_key not in st.session_state:
-            st.session_state[history_key] = []
-        messages = st.session_state[history_key]
-
-        for message in messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        prompt = st.chat_input(
-            "Ask Claude a study question",
-            key=f"claude-input-{chat_scope}",
-        )
-        if prompt:
-            question = prompt.strip()
-            if not question:
-                st.warning("Enter a question before sending.")
-            elif len(question) > MAX_QUESTION_CHARS:
-                st.error(
-                    f"Keep questions under {MAX_QUESTION_CHARS:,} characters."
-                )
-            else:
-                with st.chat_message("user"):
-                    st.markdown(question)
-                try:
-                    with st.chat_message("assistant"):
-                        answer = st.write_stream(
-                            stream_claude_response(
-                                api_key=api_key,
-                                history=messages,
-                                question=question,
-                                study_notes=study_notes,
-                            )
+        else:
+            with st.chat_message("user"):
+                st.markdown(question)
+            try:
+                with st.chat_message("assistant"):
+                    answer = st.write_stream(
+                        stream_local_response(
+                            history=messages,
+                            question=question,
+                            study_notes=study_notes,
                         )
-                except anthropic.AuthenticationError:
-                    st.error(
-                        "Claude rejected the API key. Check the key in "
-                        "Streamlit Secrets."
                     )
-                except anthropic.RateLimitError:
-                    st.error(
-                        "Claude's rate or spending limit was reached. Check "
-                        "your Anthropic Console account."
-                    )
-                except anthropic.APIConnectionError:
-                    st.error(
-                        "Could not connect to Claude. Check the app's network "
-                        "connection and try again."
-                    )
-                except anthropic.APIError as exc:
-                    st.error(
-                        "Claude request failed "
-                        f"({type(exc).__name__}). Check API settings and retry."
-                    )
-                else:
-                    messages.extend(
-                        [
-                            {"role": "user", "content": question},
-                            {"role": "assistant", "content": answer},
-                        ]
-                    )
-                    st.session_state[history_key] = messages[-16:]
+            except LocalModelNotFoundError:
+                st.error(
+                    f"Model {MODEL_ID} isn't downloaded. Run "
+                    f"`ollama pull {MODEL_ID}` in PowerShell, then try again."
+                )
+            except LocalModelUnavailableError:
+                st.error(
+                    "Couldn't connect to Ollama. Start Ollama on the same "
+                    "computer that runs Streamlit. The Streamlit Cloud "
+                    "deployment can't reach Ollama on your PC."
+                )
+            except LocalModelError as exc:
+                st.error(str(exc))
+            else:
+                messages.extend(
+                    [
+                        {"role": "user", "content": question},
+                        {"role": "assistant", "content": answer},
+                    ]
+                )
+                st.session_state[history_key] = messages[-16:]
