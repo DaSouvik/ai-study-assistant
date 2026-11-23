@@ -1,9 +1,7 @@
-# Study Desk
+# AI Study Assistant
 
-A Streamlit study app for private PDF libraries, summaries, quizzes,
-flashcards, and searchable notes. Google OIDC identifies each account; Supabase
-PostgreSQL stores documents with an owner ID so one account cannot browse,
-search, or delete another account's records.
+A Streamlit web app for uploading PDF study notes and generating summaries,
+quizzes, flashcards, and searchable library entries locally.
 
 ## Run locally
 
@@ -11,53 +9,51 @@ search, or delete another account's records.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-Copy-Item .streamlit\secrets.toml.example .streamlit\secrets.toml
 python -m streamlit run app.py
 ```
-
-Before running, replace the example values in `.streamlit/secrets.toml` with
-your Google OAuth credentials and Supabase PostgreSQL session-pooler URL. Never
-commit or share this file. For local sign-in, register
-`http://localhost:8501/oauth2callback` as an authorized Google redirect URI.
 
 OCR for scanned PDFs requires Tesseract. On Streamlit Community Cloud, the
 `packages.txt` file installs Tesseract during deployment. Locally on Windows,
 install Tesseract and ensure `tesseract.exe` is available on `PATH`.
 
-## Configure private sign-in and storage
+## Deploy to Streamlit Community Cloud
 
-1. Create a Google OAuth client. For local development, add
-   `http://localhost:8501/oauth2callback` as a redirect URI.
-2. Create a Supabase project and copy its **session pooler** PostgreSQL
-   connection string from **Connect**. Use SSL; the app enables `sslmode=require`.
-3. Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and set
-   the real credentials. Generate a unique, long `cookie_secret`.
-4. For Streamlit Community Cloud, add the same settings to the app's Secrets
-   panel. Change `redirect_uri` to
-   `https://dasouvik-ai-study-assistant-app-ho0the.streamlit.app/oauth2callback`
-   and register that exact URI in the Google OAuth client.
-5. Keep the Supabase database URL and Google client secret only in the local
-   secrets file or Streamlit Cloud Secrets. Never put them in Git, chat, or
-   client-side code.
+1. Push this repository to GitHub.
+2. Open https://share.streamlit.io.
+3. Sign in with GitHub.
+4. Select this repository and the `main` branch.
+5. Set the main file path to `app.py`.
+6. Deploy the app.
 
-The app stops with a setup message if authentication or PostgreSQL settings are
-missing. It does not fall back to shared SQLite on a deployed app. Google OAuth
-consent-screen testing mode only permits configured test users; broader use may
-require completing Google's verification steps.
+The app uses local SQLite storage. Streamlit Cloud storage can reset whenever
+the app restarts or redeploys, and all users on a public deployment share the
+same library. Do not upload private documents.
 
-Any Google account with the app URL can sign in; the app currently has no
-invite-only allowlist or cross-account library sharing. The existing local
-SQLite database is not imported into Supabase. If a database contains legacy
-rows without an owner, migrations leave them unassigned and hidden; they are
-never assigned to the first person who signs in.
+## Install on a phone
 
-## Deployment and mobile app status
+The `pwa/` directory contains a small installable web-app shell that opens the
+Streamlit app. Deploy it as a separate static site on Netlify:
 
-Deploy `app.py` to Streamlit Community Cloud after the Google and Supabase
-secrets are configured. The current live app remains the older shared version
-until that deployment updates.
+1. Sign in to Netlify with GitHub and import this repository.
+2. Keep the build settings from `netlify.toml` (`pwa` is the publish directory;
+   no build command is needed).
+3. Open the assigned HTTPS `*.netlify.app` URL on Android in Chrome, then choose
+   **Install app** or **Add to Home screen** from the browser menu.
+4. On iPhone, open the URL in Safari, use **Share**, then **Add to Home Screen**.
 
-The old `pwa/` wrapper embeds Streamlit in an iframe. Streamlit authentication
-is not supported in embedded apps, so do not deploy that wrapper for private
-libraries. The PWA and Play Store packaging are deferred until the front end is
-changed to an architecture that supports sign-in.
+The shell can show an offline message, but the study app and its documents still
+require an internet connection.
+
+## Google Play
+
+The PWA can be installed from a browser without Play Store publication. To
+publish it on Google Play, package the hosted PWA as an Android Trusted Web
+Activity (for example with PWABuilder), then publish the signed package through
+Google Play Console. The final package's signing-certificate fingerprint must
+be added to `pwa/.well-known/assetlinks.json` and deployed at the PWA host's
+root before the Android app can be verified. Do not create that file with a
+placeholder fingerprint.
+
+Play Store release also requires a Play Console developer account and store
+materials such as a privacy policy. The wrapper does not add authentication or
+per-user document storage; visitors still share the same Streamlit library.
