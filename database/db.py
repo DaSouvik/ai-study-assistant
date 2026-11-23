@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+import socket
 
 from sqlalchemy import (
     Column,
@@ -63,6 +64,54 @@ def configure_database(database_url: str | None) -> None:
         raise ValueError("Only Supabase PostgreSQL or SQLite URLs are supported.")
 
     _configured_database_url = url
+
+
+def diagnose_database_network() -> dict[str, bool]:
+    url = _configured_database_url
+    if url is None or not url.drivername.startswith("postgresql"):
+        return {}
+    if url.host is None:
+        return {}
+
+    try:
+        addresses = socket.getaddrinfo(
+            url.host,
+            url.port or 5432,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror:
+        return {
+            "dns_resolved": False,
+            "ipv4_dns": False,
+            "ipv4_tcp": False,
+            "ipv6_dns": False,
+            "ipv6_tcp": False,
+        }
+
+    result = {"dns_resolved": True}
+    for family, name in (
+        (socket.AF_INET, "ipv4"),
+        (socket.AF_INET6, "ipv6"),
+    ):
+        family_addresses = [
+            address for address in addresses if address[0] == family
+        ]
+        result[f"{name}_dns"] = bool(family_addresses)
+        result[f"{name}_tcp"] = False
+        for address in family_addresses[:2]:
+            try:
+                with socket.socket(
+                    address[0],
+                    address[1],
+                    address[2],
+                ) as connection:
+                    connection.settimeout(2)
+                    connection.connect(address[4])
+                result[f"{name}_tcp"] = True
+                break
+            except OSError:
+                continue
+    return result
 
 
 @lru_cache(maxsize=8)

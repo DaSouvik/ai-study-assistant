@@ -7,6 +7,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 from database.db import (
     configure_database,
+    diagnose_database_network,
     delete_document,
     find_library_matches,
     get_document,
@@ -217,6 +218,20 @@ except (ArgumentError, SQLAlchemyError, ValueError) as exc:
         "Private storage is unavailable. Verify the Supabase session-pooler "
         f"connection settings. Error type: {type(exc).__name__}."
     )
+    network = diagnose_database_network()
+    if network:
+        status = {
+            key: "available" if available else "unavailable"
+            for key, available in network.items()
+        }
+        st.caption(
+            "App-server network probe (TCP only; database login not tested): "
+            f"DNS: {status['dns_resolved']}; "
+            f"IPv4 DNS: {status['ipv4_dns']}, "
+            f"TCP: {status['ipv4_tcp']}; "
+            f"IPv6 DNS: {status['ipv6_dns']}, "
+            f"TCP: {status['ipv6_tcp']}."
+        )
     st.stop()
 
 documents = get_documents(owner_id=owner_id)
