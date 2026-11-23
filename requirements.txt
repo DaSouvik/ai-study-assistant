@@ -1,2 +1,3 @@
 streamlit>=1.57,<2
 pymupdf>=1.26,<2
+anthropic>=0.40,<1
