@@ -2,7 +2,7 @@
 
 A Streamlit web app for uploading PDF study notes and generating summaries,
 quizzes, flashcards, and searchable library entries locally.
-An optional local Gemma study assistant can answer questions using Ollama.
+An optional Cloudflare Workers AI assistant can answer study questions online.
 
 ## Run locally
 
@@ -17,24 +17,28 @@ OCR for scanned PDFs requires Tesseract. On Streamlit Community Cloud, the
 `packages.txt` file installs Tesseract during deployment. Locally on Windows,
 install Tesseract and ensure `tesseract.exe` is available on `PATH`.
 
-## Run the local AI assistant
+## Enable the online AI assistant
 
-Install [Ollama for Windows](https://ollama.com/download/windows), then open
-Ollama and download the lightweight model from PowerShell:
+Create a Cloudflare account and a Workers AI API token, then copy your Account
+ID and token into `.streamlit/secrets.toml` for local development or the app's
+**Settings → Secrets** in Streamlit Community Cloud:
 
-```powershell
-ollama pull gemma3:1b
+```toml
+[cloudflare]
+account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+api_token = "YOUR_CLOUDFLARE_WORKERS_AI_TOKEN"
 ```
 
-Run the app locally with the commands above. The assistant uses Ollama on the
-same computer, so it needs no API key and has no provider usage charges. Model
-responses may be slower on computers without a compatible GPU. Questions and
-optionally selected notes are sent to your local Ollama process, not to an
-external AI API.
+See Cloudflare's [Workers AI REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/)
+for creating the token and finding the Account ID. Never commit or share the
+token.
 
-The public Streamlit Community Cloud deployment cannot access Ollama on your
-computer, so its assistant cannot answer. Run the app locally to chat with the
-model.
+The app uses Cloudflare Workers AI's free daily allocation. All visitors share
+the account's 10,000 Neurons per day; requests stop when the free allowance is
+exhausted. Keep the Cloudflare account on the Workers Free plan to avoid paid
+overages. The app has no sign-in, so visitors can consume the shared quota.
+Questions are sent to Cloudflare. Document text is sent only when the user
+explicitly opts in.
 
 ## Deploy to Streamlit Community Cloud
 

@@ -1,15 +1,19 @@
 import hashlib
+from collections.abc import Mapping
 
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
-from local_assistant import (
+from cloudflare_assistant import (
     MAX_CONTEXT_CHARS,
+    MAX_HISTORY_MESSAGES,
     MAX_QUESTION_CHARS,
     MODEL_ID,
-    LocalModelError,
-    LocalModelNotFoundError,
-    LocalModelUnavailableError,
-    stream_local_response,
+    CloudflareAIError,
+    CloudflareConfigurationError,
+    CloudflareQuotaExceededError,
+    CloudflareUnavailableError,
+    stream_cloudflare_response,
 )
 from database.db import (
     delete_document,
@@ -36,6 +40,26 @@ def _navigate_to(page_name: str) -> None:
 def _open_study_document(document_id: int) -> None:
     st.session_state["study-document-select"] = document_id
     _navigate_to("Study tools")
+
+
+def _configured_cloudflare_credentials() -> tuple[str, str] | None:
+    try:
+        settings = st.secrets["cloudflare"]
+    except (KeyError, StreamlitSecretNotFoundError):
+        return None
+
+    if not isinstance(settings, Mapping):
+        return None
+    account_id = settings.get("account_id")
+    api_token = settings.get("api_token")
+    if (
+        not isinstance(account_id, str)
+        or not account_id.strip()
+        or not isinstance(api_token, str)
+        or not api_token.strip()
+    ):
+        return None
+    return account_id.strip(), api_token.strip()
 
 
 st.set_page_config(
@@ -175,8 +199,8 @@ with st.sidebar:
 
 st.title("📚 Study Desk")
 st.caption(
-    "Search, review, and practise from your own PDFs. Local tools need no AI "
-    "API key; Ollama chat works only when this app runs beside Ollama."
+    "Search, review, and practise from your own PDFs. Local study tools need "
+    "no AI API key; online AI chat is available in AI assistant."
 )
 
 if page == "Overview":
@@ -253,7 +277,7 @@ if page == "Overview":
                 - Searchable notes library
                 - Quick summaries and quizzes
                 - Interactive flashcard practice
-                - Optional local-only Ollama chat
+                - Optional online AI study chat
                 """
             )
 
@@ -263,7 +287,7 @@ if page == "Overview":
             Summaries and practice questions are generated from your document
             text using local rules; they are not AI-generated. Flashcards show
             terms from your notes and reveal their source context, rather than
-            generating definitions. Use AI assistant for local Ollama chat.
+            generating definitions. Use AI assistant for online AI chat.
             """
         )
         st.warning(
@@ -591,110 +615,130 @@ elif page == "Study tools":
                                     st.rerun()
 
 elif page == "AI assistant":
-    st.subheader("Local AI study assistant")
+    st.subheader("AI study assistant")
     st.write(
         f"Ask questions, request explanations, or make a study plan with {MODEL_ID}."
     )
-    st.info(
-        "Ollama runs the model on the same computer as this app. There is no "
-        "API key or provider usage bill."
-    )
     st.warning(
-        "This only works when Streamlit and Ollama run on the same computer. "
-        "The public Streamlit Cloud app cannot access Ollama on your PC."
+        "This public app has no sign-in. Every visitor uses the same Cloudflare "
+        "Workers AI free quota, so it can run out. The Free plan currently "
+        "includes 10,000 Neurons per day; requests stop when the allowance is "
+        "exhausted. Keep the Cloudflare account on its Free plan to avoid paid "
+        "overages. Chat messages go to Cloudflare; document text is sent only "
+        "when you opt in below."
     )
-    st.markdown("[Install Ollama for Windows](https://ollama.com/download/windows)")
-    st.code("ollama pull gemma3:1b", language="powershell")
-
-    document_labels = {
-        int(document["id"]): str(document["filename"])
-        for document in documents
-    }
-    selected_document_id = st.selectbox(
-        "Study notes (optional)",
-        options=[None, *document_labels],
-        format_func=lambda document_id: (
-            "No document"
-            if document_id is None
-            else document_labels[document_id]
-        ),
-        key="local-model-context-document",
-    )
-    selected_document = (
-        get_document(selected_document_id)
-        if selected_document_id is not None
-        else None
-    )
-    include_notes = st.checkbox(
-        "Include this document's text in local model requests",
-        disabled=selected_document is None,
-        key=f"local-model-include-notes-{selected_document_id}",
-    )
-    study_notes = None
-    if include_notes and selected_document is not None:
-        study_notes = str(selected_document["content"])
-        st.caption(
-            "The first "
-            f"{MAX_CONTEXT_CHARS:,} characters will be sent to Ollama on "
-            "this computer with each question."
+    credentials = _configured_cloudflare_credentials()
+    if credentials is None:
+        st.info(
+            "Configure a Cloudflare Workers AI account ID and API token in "
+            "Streamlit Secrets to enable chat."
         )
-
-    chat_scope = (
-        f"document-{selected_document_id}"
-        if study_notes is not None
-        else "general"
-    )
-    history_key = f"local-model-messages-{chat_scope}"
-    if history_key not in st.session_state:
-        st.session_state[history_key] = []
-    messages = st.session_state[history_key]
-
-    for message in messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    prompt = st.chat_input(
-        "Ask the local study assistant",
-        key=f"local-model-input-{chat_scope}",
-    )
-    if prompt:
-        question = prompt.strip()
-        if not question:
-            st.warning("Enter a question before sending.")
-        elif len(question) > MAX_QUESTION_CHARS:
-            st.error(
-                f"Keep questions under {MAX_QUESTION_CHARS:,} characters."
+        st.code(
+            '[cloudflare]\naccount_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"\n'
+            'api_token = "YOUR_CLOUDFLARE_WORKERS_AI_TOKEN"',
+            language="toml",
+        )
+        st.markdown(
+            "[Create a Workers AI token and find your account ID]"
+            "(https://developers.cloudflare.com/workers-ai/get-started/rest-api/)"
+        )
+    else:
+        account_id, api_token = credentials
+        document_labels = {
+            int(document["id"]): str(document["filename"])
+            for document in documents
+        }
+        selected_document_id = st.selectbox(
+            "Study notes (optional)",
+            options=[None, *document_labels],
+            format_func=lambda document_id: (
+                "No document"
+                if document_id is None
+                else document_labels[document_id]
+            ),
+            key="cloudflare-context-document",
+        )
+        selected_document = (
+            get_document(selected_document_id)
+            if selected_document_id is not None
+            else None
+        )
+        include_notes = st.checkbox(
+            "Include this document's text in Cloudflare requests",
+            disabled=selected_document is None,
+            key=f"cloudflare-include-notes-{selected_document_id}",
+        )
+        study_notes = None
+        if include_notes and selected_document is not None:
+            study_notes = str(selected_document["content"])
+            st.caption(
+                "Up to "
+                f"{MAX_CONTEXT_CHARS:,} characters will be sent to Cloudflare "
+                "with each question."
             )
-        else:
-            with st.chat_message("user"):
-                st.markdown(question)
-            try:
-                with st.chat_message("assistant"):
-                    answer = st.write_stream(
-                        stream_local_response(
-                            history=messages,
-                            question=question,
-                            study_notes=study_notes,
-                        )
-                    )
-            except LocalModelNotFoundError:
+        chat_scope = (
+            f"document-{selected_document_id}"
+            if study_notes is not None
+            else "general"
+        )
+        history_key = f"cloudflare-messages-{chat_scope}"
+        if history_key not in st.session_state:
+            st.session_state[history_key] = []
+        messages = st.session_state[history_key]
+
+        for message in messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        prompt = st.chat_input(
+            "Ask the AI study assistant",
+            key=f"cloudflare-input-{chat_scope}",
+        )
+        if prompt:
+            question = prompt.strip()
+            if not question:
+                st.warning("Enter a question before sending.")
+            elif len(question) > MAX_QUESTION_CHARS:
                 st.error(
-                    f"Model {MODEL_ID} isn't downloaded. Run "
-                    f"`ollama pull {MODEL_ID}` in PowerShell, then try again."
+                    f"Keep questions under {MAX_QUESTION_CHARS:,} characters."
                 )
-            except LocalModelUnavailableError:
-                st.error(
-                    "Couldn't connect to Ollama. Start Ollama on the same "
-                    "computer that runs Streamlit. The Streamlit Cloud "
-                    "deployment can't reach Ollama on your PC."
-                )
-            except LocalModelError as exc:
-                st.error(str(exc))
             else:
-                messages.extend(
-                    [
-                        {"role": "user", "content": question},
-                        {"role": "assistant", "content": answer},
-                    ]
-                )
-                st.session_state[history_key] = messages[-16:]
+                with st.chat_message("user"):
+                    st.markdown(question)
+                try:
+                    with st.chat_message("assistant"):
+                        answer = st.write_stream(
+                            stream_cloudflare_response(
+                                account_id=account_id,
+                                api_token=api_token,
+                                history=messages[-MAX_HISTORY_MESSAGES:],
+                                question=question,
+                                study_notes=study_notes,
+                            )
+                        )
+                except CloudflareConfigurationError:
+                    st.error(
+                        "Cloudflare rejected the account ID or API token. "
+                        "Check the Workers AI token permissions in Streamlit "
+                        "Secrets."
+                    )
+                except CloudflareQuotaExceededError:
+                    st.error(
+                        "Cloudflare's rate limit or free daily quota was "
+                        "reached. Check Workers AI usage and try again later."
+                    )
+                except CloudflareUnavailableError:
+                    st.error(
+                        "Could not connect to Cloudflare Workers AI. Try again "
+                        "later."
+                    )
+                except CloudflareAIError as exc:
+                    st.error(str(exc))
+                else:
+                    messages.extend(
+                        [
+                            {"role": "user", "content": question},
+                            {"role": "assistant", "content": answer},
+                        ]
+                    )
+                    st.session_state[history_key] = messages[-16:]
